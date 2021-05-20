@@ -1,0 +1,90 @@
+SELECT 
+    CASE 
+            WHEN ri.l <= 18
+                AND ri.w <= 14
+                AND ri.h <= 8
+                AND ri.weight < 20 THEN 'SORTABLE'
+            WHEN ri.l <= 18
+                AND ri.w <= 14
+                AND ri.h <= 8
+                AND ri.weight < 50 THEN 'LIBRARY'
+            WHEN ri.l <= 28
+                AND ri.w <= 14
+                AND ri.h <= 8
+                AND ri.weight < 25 THEN 'DRAWER'
+            WHEN ri.l <= 28
+                AND ri.w <= 24
+                AND ri.h <= 20
+                AND ri.weight < 50 THEN 'LIBRARY-DEEP'
+            WHEN ri.l <= 48
+                AND ri.w <= 4
+                AND ri.h <= 4
+                AND ri.weight < 50 THEN 'BAT-BIN'
+            WHEN ri.l <= 50
+                AND ri.w <= 16
+                AND ri.h <= 16
+                AND ri.weight < 50 THEN 'HALF-VERTICAL'
+            WHEN ri.l <= 50
+                AND ri.w <= 42
+                AND ri.h <= 28
+                AND ri.weight < 50 THEN 'RAINBOW'
+            WHEN ri.l <= 99
+                AND ri.w <= 6
+                AND ri.h <= 6
+                AND ri.weight < 50 THEN 'BARREL'
+            WHEN ri.l <= 99
+                AND ri.w <= 24
+                AND ri.h <= 20
+                AND ri.weight < 50 THEN 'PASS-THROUGH'
+            WHEN ri.l <= 99 THEN 'PASS-THROUGH-BULKY'
+            ELSE 'LADDER'
+            
+    END AS item_sort
+    
+    , CASE
+            WHEN ri.receive_type = 'PALLET' THEN 'PALLET'
+            ELSE 'EACH'
+    END AS receive_type
+    
+    , SUM(ri.quantity) AS receive_quantity
+FROM (
+
+    SELECT 
+        coalesce(fam.item_authority_id, ofc.fnsku, rd.fcsku) AS boo
+        , mpi.pkg_length AS l
+        , mpi.pkg_width AS w
+        , mpi.pkg_height As h
+        , mpi.pkg_weight As weight
+        , rd.receive_type
+        , rd.quantity
+    FROM na_acs_met_ddl.receive_details AS rd
+    
+    LEFT JOIN (
+        SELECT fcsku, fnsku
+        FROM booker.o_fcskus
+        WHERE REGION_ID = 1
+    ) AS ofc
+        ON rd.fcsku = ofc.fcsku
+        
+    LEFT JOIN (
+        SELECT fulfillment_network_sku, item_authority_id
+        FROM booker.d_fnsku_asin_map
+        WHERE region_id = 1
+        AND snapshot_day = TRUNC(GETDATE() -1)
+    ) AS fam
+        ON fam.fulfillment_network_sku = COALESCE(ofc.fnsku,rd.fcsku)
+    
+    JOIN (
+        SELECT ASIN, pkg_length, pkg_width, pkg_height, pkg_weight
+        FROM booker.d_mp_physical_items 
+        WHERE region_id = 1 
+        AND marketplace_id = 1 
+    ) AS mpi ON mpi.ASIN = coalesce(fam.item_authority_id, ofc.fnsku, rd.fcsku)
+        
+    
+    WHERE rd.REGION_ID = 1
+        AND rd.warehouse_id ='BOS7'
+        AND rd.receive_date BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE
+    ) AS ri
+    
+GROUP BY 1, 2
