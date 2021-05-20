@@ -1,0 +1,62 @@
+/*+ ETLM{depend:{replace:[
+      {name:"INV_QUALITY_DDL.D_FC_MORIARTY_PROBLEMS"},
+      {name:"INV_QUALITY_DDL.D_FC_MORIARTY_PROBLEM_EVENTS"},
+      {name:"BOOKER.D_FNSKU_ASIN_MAP"},
+      {name:"BOOKER.O_FCSKUS"},
+    ]}}*/
+
+SELECT fmp.created_day
+    , fmp.created_date
+    , fmp.application_name
+    , fmp.created_by_user
+    , fmp.location_id
+    , COALESCE(fam.item_authority_id, ofc.fnsku, fmpSku.event_attribute_value) AS asin
+    , COALESCE(ofc.fnsku, fmpSku.event_attribute_value) AS fnsku
+    , fmpSku.event_attribute_value AS fcsku
+    , fmpQ.event_attribute_value AS quantity
+    
+FROM inv_quality_ddl.d_fc_moriarty_problems AS fmp
+
+JOIN
+    (
+    SELECT problem_id, event_attribute_value
+    FROM inv_quality_ddl.d_fc_moriarty_problem_events
+        WHERE region_id = 1
+            AND warehouse_id = '{WAREHOUSE_ID}'
+            AND created_day >= to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD') - 7
+            AND event_attribute = 'fc_sku'
+            AND event_type = 'AddItemEvent'
+) AS fmpSku ON fmp.problem_id = fmpSku.problem_id
+
+JOIN
+
+    (
+    SELECT problem_id, event_attribute_value
+    FROM inv_quality_ddl.d_fc_moriarty_problem_events
+        WHERE region_id = '{REGION_ID}'
+            AND warehouse_id = '{WAREHOUSE_ID}'
+            AND created_day >= to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD') - 7
+            AND event_attribute = 'quantity_added'
+) AS fmpQ ON fmp.problem_id = fmpQ.problem_id
+
+LEFT JOIN
+    (
+    SELECT fcsku, fnsku
+    FROM booker.o_fcskus
+        WHERE region_id = '{REGION_ID}'
+            AND is_active = 'Y'
+) as ofc ON ofc.fcsku = fmpSku.event_attribute_value
+        
+LEFT JOIN
+    (
+    SELECT fulfillment_network_sku, item_authority_id
+    FROM booker.d_fnsku_asin_map
+        WHERE region_id = '{REGION_ID}'
+        AND snapshot_day = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+) AS fam ON fam.fulfillment_network_sku = COALESCE(ofc.fnsku,fmpSku.event_attribute_value)
+
+WHERE fmp.region_id = '{REGION_ID}'
+    AND fmp.warehouse_id = '{WAREHOUSE_ID}'
+    AND fmp.created_day >= to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD') - 7
+    AND fmp.application_name = 'AMNESTY_ADD_BACK'
+    AND fmp.status = 'Created'
