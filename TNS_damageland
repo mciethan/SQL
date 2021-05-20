@@ -1,0 +1,73 @@
+/*+ ETLM{depend:{replace:[
+      {name:"BOOKER.D_BIN_ITEMS"},
+      {name:"BOOKER.D_FNSKU_ASIN_MAP"},
+      {name:"BOOKER.O_FCSKUS"},
+      {name:"BOOKER.O_FCSKU_LPN_PROPERTIES"},
+      {name:"AFT_CAP_CONF_DDL.CAPACITY_UTILIZATION"}
+    ]}}*/
+
+SELECT
+	bb.warehouse_id
+    , bb.bin_type
+    , bb.bin_id
+    , bb.total_inventory_volume
+    , bb.gross_bin_volume
+    , bb.target_utilization
+    , items.asin
+    , items.fnsku
+    , items.fcsku 
+    , items.lpn
+    , items.quantity
+    , items.owner
+    , items.received_date
+FROM aft_cap_conf_ddl.capacity_utilization AS bb
+LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use a left join
+    
+	select 
+    	dbi.warehouse_id
+    	, dbi.bin_id
+    	, COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS asin
+    	, COALESCE(ofc.fnsku, dbi.isbn) AS fnsku
+    	, dbi.isbn as fcsku
+    	, lp.lpn
+    	, dbi.quantity
+    	, dbi.owner 
+    	, dbi.received_date
+	from BOOKER.D_BIN_ITEMS as dbi
+    
+    left outer join (
+        SELECT fcsku, lpn
+        FROM booker.o_fcsku_lpn_properties 
+        WHERE region_id = 1
+        ) AS lp
+    	on dbi.ISBN = LP.fcsku
+        
+    left outer join (
+        select fcsku, fnsku
+        from booker.o_fcskus
+        where 
+    		region_id = 1
+    		and is_active = 'Y'
+        ) as ofc
+		on ofc.fcsku = dbi.isbn
+    
+    left outer join (
+        select fulfillment_network_sku, item_authority_id
+		from booker.D_FNSKU_ASIN_MAP
+		where 
+    		region_id = 1
+			and snapshot_day =  to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+        ) as fam
+		on fam.fulfillment_network_sku = COALESCE(ofc.fnsku, dbi.isbn)
+
+	where
+ 		dbi.region_id = 1
+		and dbi.SNAPSHOT_DATE = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+) AS items 
+	ON items.warehouse_id = bb.warehouse_id AND items.bin_id = bb.bin_id
+    
+WHERE 
+    	bb.region_id = 1
+		and bb.snapshot_day = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+		and bb.warehouse_id IN('ABE4','ACY2','ALB1','BNA2','BOS7','BWI4','CHA2','CLT3','CMH2','CMH3','DCA6','DEN2','DET1','DET2','GSO1','GSP1','HOU3','IND2','IND5','JAX3','JVL1','LAS6','LGB4','LGB6','MCO2','MDT1','MDW6','MDW9','MEM6','MGE3','MKC4','ONT9','ORD2','PDX7','PHL4','PHL5','PHL6','PHX5','PHX7','PIT2','RIC1','RNO4','SAV3','SBD2','SCK1','SJC7','SLC2','SNA4','STL4','TEB3','TEB6','TPA3','YEG1','YOW1','YVR3','YYZ2','YYZ3')
+    	and bb.bin_usage = 'DAMAGE'
