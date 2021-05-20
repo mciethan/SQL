@@ -1,0 +1,60 @@
+/*+ ETLM {
+	depend:{
+    	add:[
+        	{name:"BOOKER.BIN_EDIT_ENTRIES"}
+            , {name:"BOOKER.O_FCSKUS"}
+            , {name:"BOOKER.D_EMPLOYEE_DETAILS"}
+        ]
+    }
+}
+*/
+
+/* Goal of this query is to return all tsdmg deletions on a given snapshot day along with info about where and by whom those tsdmg's were picked originally. tsdmg deletions show
+up in two forms in bin edit entries. either they are shorted out by sideline, or manually deleted with Delete Items.  This query does not return deletions from vttsdmg - the
+goal is to catch those items when they are shorted from the tsdmg to the vttsdmg, i.e. while there is still a chance to sideline them back into inventory with correct sku.
+*/
+
+SELECT DISTINCT
+	LEFT(CONVERT_TIMEZONE ('PST', 'EST', bee.entry_date), 10) AS missing_date
+    , bee.old_bin_id AS tote
+    , bee.operation AS op
+    , bee.new_bin_id AS vttote
+    , COALESCE(ofc.fnsku,bee2.isbn) AS fnsku
+    , bee.quantity AS qty
+    , LEFT(CONVERT_TIMEZONE ( 'PST', 'EST', bee2.snapshot_day), 10) AS picked_date
+    , bee2.old_bin_id AS picked_from_bin
+    , bee2.person AS picked_by
+    , em.supervisor_name
+FROM booker.bin_edit_entries AS bee
+
+JOIN (
+    SELECT snapshot_day, old_bin_id, isbn, new_bin_id, person -- this subquery table pulls the pick info for each tsdmg that was shorted or deleted so that we can do bin checks.
+    FROM booker.bin_edit_entries 
+    WHERE REGION_ID = '{REGION_ID}'
+        AND WAREHOUSE_ID = '{WAREHOUSE_ID}'
+        AND old_bin_id LIKE 'P-%'
+    	AND snapshot_day BETWEEN TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD') - 5 AND TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+    ) AS bee2 
+    ON bee.old_bin_id = bee2.new_bin_id 
+
+JOIN booker.o_fcskus AS ofc
+    ON bee.REGION_ID = ofc.REGION_ID AND bee2.isbn = ofc.fcsku -- this join connects the isbn (fcsku) of the item with the corresponding FNSku (scannable barcode)
+
+JOIN booker.d_employee_details AS em
+        ON bee2.person = em.login_name    	-- this join just returns the name of the supervisor of whoever picked the tsdmg that was later marked missing, to identify shift trends
+WHERE 
+    bee.REGION_ID = '{REGION_ID}'
+    AND bee.SNAPSHOT_DAY = TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+    AND bee.WAREHOUSE_ID = '{WAREHOUSE_ID}'
+    AND (
+        (
+        left(bee.old_bin_id, 5) = 'tsdmg' --this clause pulls manual tsdmg deletions
+    	AND bee.operation = 'd'
+    	AND bee.reason_code = 'M'
+        )
+        OR
+        (
+        left(bee.old_bin_id, 5) = 'tsdmg' 
+        AND left(bee.new_bin_id, 7) = 'vttsdmg' -- this clause pulls tsdmg shorts from sideline app
+        )
+        )
