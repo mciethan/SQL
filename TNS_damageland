@@ -20,8 +20,10 @@ SELECT
     , items.quantity
     , items.owner
     , items.received_date
-FROM aft_cap_conf_ddl.capacity_utilization AS bb
-LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use a left join
+FROM aft_cap_conf_ddl.capacity_utilization AS bb -- this table contains bin-level data to be able to calculate fullness
+
+-- this items subquery pulls record-level data to identify aging inventory
+LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use a left join to also consider empty bins for calculating bin type fullness
     
 	select 
     	dbi.warehouse_id
@@ -35,7 +37,7 @@ LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use 
     	, dbi.received_date
 	from BOOKER.D_BIN_ITEMS as dbi
     
-    left outer join (
+    left outer join ( -- since primary key of d_bin_items is FCSku, need to join to this other table to identify any LPNs associated with damageland FCSkus
         SELECT fcsku, lpn
         FROM booker.o_fcsku_lpn_properties 
         WHERE region_id = 1
@@ -49,7 +51,7 @@ LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use 
     		region_id = 1
     		and is_active = 'Y'
         ) as ofc
-		on ofc.fcsku = dbi.isbn
+		on ofc.fcsku = dbi.isbn -- matches each FCSku to its corresponding FNSku
     
     left outer join (
         select fulfillment_network_sku, item_authority_id
@@ -58,7 +60,7 @@ LEFT JOIN ( -- a regular JOIN would only include bins with inventory, so we use 
     		region_id = 1
 			and snapshot_day =  to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
         ) as fam
-		on fam.fulfillment_network_sku = COALESCE(ofc.fnsku, dbi.isbn)
+		on fam.fulfillment_network_sku = COALESCE(ofc.fnsku, dbi.isbn) -- matches each FNSku to its corresponding ASIN
 
 	where
  		dbi.region_id = 1
