@@ -1,0 +1,131 @@
+/*+ ETLM {
+	depend:{
+    	add:[
+        	{name:"NA_ACS_MET_DDL.UNIFIED_CYCLE_COUNT_DETAILS"}
+            , {name:"BOOKER.BIN_EDIT_ENTRIES"}
+            , {name:"BOOKER.O_FCSKUS"}
+            , {name:"BOOKER.D_FNSKU_ASIN_MAP"}
+            , {name:"BOOKER.D_BIN_ITEMS"}
+            
+        ]
+    }
+}
+*/
+   
+CREATE TEMP TABLE watson_pending_research_adds -- this table returns any pending research inventory in the site's prime locations that was added in by WatsonCycleCount
+AS
+SELECT 
+    dbi.bin_id as bin
+    , COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn) as boo
+    , COALESCE(ofc.fnsku, dbi.isbn) as fnsku
+    , dbi.ISBN AS fcsku
+	, SUM(dbi.QUANTITY) as quantity
+	, dbi.owner
+	, dbi.RECEIVED_DATE AS flipped_date
+FROM 
+	BOOKER.D_BIN_ITEMS AS dbi
+	
+LEFT JOIN
+        (SELECT
+    	fcsku, fnsku
+    FROM booker.o_fcskus
+    WHERE region_id = '{REGION_ID}'
+        AND is_active = 'Y'
+        ) as ofc
+        ON ofc.fcsku = dbi.isbn
+        
+LEFT JOIN
+        (SELECT
+    	fulfillment_network_sku, item_authority_id
+    FROM booker.d_fnsku_asin_map
+    WHERE region_id = '{REGION_ID}'
+    AND snapshot_day = to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+        ) AS fam
+        ON fam.fulfillment_network_sku = COALESCE(ofc.fnsku,dbi.isbn)
+        
+JOIN (
+		SELECT scannable_id
+        	, asin
+        	, counted_quantity
+    	FROM na_acs_met_ddl.unified_cycle_count_details
+    	WHERE
+        	REGION_ID = '{REGION_ID}'
+        	AND WAREHOUSE_ID = '{WAREHOUSE_ID}'
+        	AND expected_quantity = 0
+        	AND is_defective = 'Y'
+        	AND is_resolved = 'Y'
+    ) AS uccd ON
+    		uccd.scannable_id = dbi.bin_id
+        	AND uccd.asin = COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn)
+			AND uccd.counted_quantity = dbi.quantity
+WHERE 
+	dbi.REGION_ID = '{REGION_ID}'
+	AND dbi.SNAPSHOT_DATE = to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+    AND dbi.WAREHOUSE_ID = '{WAREHOUSE_ID}'
+    AND dbi.bin_id LIKE 'P-%'
+    AND dbi.owner = 'pending-research'
+    
+GROUP BY 1,2,3,4,6,7
+
+;
+    
+INSERT INTO watson_pending_research_adds -- this expression returns any pending research added into prime locations by AFTWatsonService, i.e. during the amnesty process
+
+SELECT 
+    dbi2.bin_id as bin
+    , COALESCE(fam2.item_authority_id, ofc2.fnsku, dbi2.isbn) as boo
+    , COALESCE(ofc2.fnsku, dbi2.isbn) as fnsku
+    , dbi2.ISBN AS fcsku
+	, SUM(dbi2.QUANTITY) as quantity
+	, dbi2.owner
+	, dbi2.RECEIVED_DATE AS flipped_date
+FROM 
+	BOOKER.D_BIN_ITEMS AS dbi2
+	
+LEFT JOIN
+        (SELECT
+    	fcsku, fnsku
+    FROM booker.o_fcskus
+    WHERE region_id = '{REGION_ID}'
+        AND is_active = 'Y'
+        ) as ofc2
+        ON ofc2.fcsku = dbi2.isbn
+        
+LEFT JOIN
+        (SELECT
+    	fulfillment_network_sku, item_authority_id
+    FROM booker.d_fnsku_asin_map
+    WHERE region_id = '{REGION_ID}'
+    AND snapshot_day = to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+        ) AS fam2
+        ON fam2.fulfillment_network_sku = COALESCE(ofc2.fnsku,dbi2.isbn)
+        
+JOIN (
+        SELECT 
+            entry_date
+            , old_bin_id
+            , isbn
+        FROM BOOKER.BIN_EDIT_ENTRIES 
+        WHERE
+            REGION_ID = '{REGION_ID}'
+            AND WAREHOUSE_ID = '{WAREHOUSE_ID}'
+            AND old_owner = 'inventory'
+            AND new_owner = 'pending-research'
+            AND distributor_order_id = 'AFTWatsonService'
+    	) AS bee ON
+        	bee.entry_date = dbi2.received_date
+            AND bee.old_bin_id = dbi2.bin_id
+            AND bee.isbn = dbi2.isbn
+
+WHERE 
+	dbi2.REGION_ID = '{REGION_ID}'
+	AND dbi2.SNAPSHOT_DATE = to_date('{RUN_DATE_YYYYMMDD}','YYYYMMDD')
+    AND dbi2.WAREHOUSE_ID = '{WAREHOUSE_ID}'
+    AND dbi2.bin_id LIKE 'P-%'
+    AND dbi2.owner = 'pending-research'
+    
+GROUP BY 1,2,3,4,6,7
+;
+
+SELECT * FROM watson_pending_research_adds
+;
