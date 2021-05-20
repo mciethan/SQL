@@ -1,0 +1,62 @@
+SELECT 
+    bins.bin_id, 
+    NVL(SUM(items.quantity),0) AS total_units, 
+    NVL(sum(items.quantity*mpi.pkg_weight),0) AS total_weight
+FROM 
+    (SELECt bin_id, bin_type_name
+    FROM booker.bins
+    WHERE warehouse_id = 'BOS7'
+    AND SNAPSHOT_DAY = TRUNC(GETDATE() - 1)
+    AND bin_type_name = 'DRAWER'
+    ) AS bins 
+    
+    LEFT JOIN (
+    SELECT
+        dbi.bin_id
+        , dbi.quantity
+        , dbi.isbn AS fcsku
+        , COALESCE(ofc.fnsku, dbi.isbn) AS fnsku
+        , coalesce(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS boo
+        , dbi.owner
+    
+    FROM
+        booker.d_bin_items AS dbi
+    
+    
+        
+    LEFT JOIN
+        (SELECT
+    	fcsku, fnsku
+    FROM booker.o_fcskus
+    WHERE 1=1
+        AND region_id = 1
+        AND is_active = 'Y'
+        ) as ofc
+        ON ofc.fcsku = dbi.isbn
+        
+    LEFT JOIN
+        (SELECT
+    	fulfillment_network_sku, item_authority_id
+    FROM booker.d_fnsku_asin_map
+    WHERE region_id = 1
+    AND snapshot_day = TRUNC(GETDATE() -1)
+        ) AS fam
+        ON fam.fulfillment_network_sku = COALESCE(ofc.fnsku,dbi.isbn)
+
+    
+        
+    WHERE 1=1
+        AND dbi.region_id = 1
+        AND dbi.snapshot_date = TRUNC(GETDATE() -1)
+        AND dbi.warehouse_id = 'BOS7'
+    ) as items ON bins.bin_id = items.bin_id
+    
+    LEFT JOIN 
+    (SELECT
+	asin, pkg_weight
+    FROM booker.d_mp_physical_items
+    WHERE region_id = 1
+    AND marketplace_id = 1
+    ) AS mpi on items.boo = mpi.asin
+
+GROUP BY 1
