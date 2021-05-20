@@ -1,0 +1,100 @@
+/**
+ * Query Name: ASIN Velocity
+                ,
+ * Query Description: Gets Asin Velocity Based on past 7 days of sales
+                ,
+ * Database: qubitedxsecondary
+                ,
+ * Created By: papaccio
+                ,
+Updated by mciethan for use at BOS7
+                
+                
+**/
+SELECT 
+    left(items.bin_id, 5) as bin_mod
+    , items.bin_id
+    , items.boo
+    , items.fnsku
+    , items.fcsku
+    , SUM(items.quantity)
+    , vel.velocity
+    
+
+
+FROM
+    (
+    SELECT
+        dbi.bin_id
+        , dbi.quantity
+        , dbi.isbn AS fcsku
+        , COALESCE(ofc.fnsku, dbi.isbn) AS fnsku
+        , coalesce(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS boo
+        , dbi.owner
+    
+    FROM
+        booker.d_bin_items AS dbi
+    
+    
+        
+    LEFT JOIN
+        (SELECT
+    	fcsku, fnsku
+    FROM booker.o_fcskus
+    WHERE 1=1
+        AND region_id = 1
+        AND is_active = 'Y'
+        ) as ofc
+        ON ofc.fcsku = dbi.isbn
+        
+    LEFT JOIN
+        (SELECT
+    	fulfillment_network_sku, item_authority_id
+    FROM booker.d_fnsku_asin_map
+    WHERE region_id = 1
+    AND snapshot_day = TRUNC(GETDATE() -1)
+        ) AS fam
+        ON fam.fulfillment_network_sku = COALESCE(ofc.fnsku,dbi.isbn)
+
+    
+        
+    WHERE 1=1
+        AND dbi.region_id = 1
+        AND dbi.snapshot_date = TRUNC(GETDATE() -1)
+        AND dbi.warehouse_id = 'BOS7'
+        AND dbi.bin_id LIKE 'P-%'
+    ) as items
+    
+    
+    left join
+    (select
+     bin_id
+    , bin_type_name
+    ,  bin_usage
+    from
+        na_acs_met_ddl.bins
+    Where 1=1
+        and region_id = 1
+        and warehouse_id= 'BOS7'
+    ) as bin
+    on bin.bin_id = items.bin_id
+    
+    
+    Left JOIN
+    (SELECT ASIN, sum(shipped_units)
+	FROM booker.d_daily_shipments
+    WHERE warehouse_id = 'BOS7'
+    AND region_id = 1
+    AND activity_day BETWEEN GETDATE() - 8 AND GETDATE() - 1
+    GROUP BY asin
+    ) vel on items.boo = vel.asin
+    
+WHERE vel.velocity >= 500
+
+GROUP BY bin_mod
+    , items.bin_id
+    , items.boo
+    , items.fnsku
+    , items.fcsku
+    , vel.velocity
+    /* Velocity based on volume sold in the previous 7 days, since FCResearch is weekly */
