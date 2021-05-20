@@ -1,0 +1,54 @@
+SELECT ppr.login As received_by
+    , emp.manager
+    , CASE 
+	WHEN emp.shift_pattern LIKE 'D%'
+		THEN 'Days'
+	WHEN emp.shift_pattern LIKE 'N%'
+		THEN 'Nights'
+	When emp.shift_pattern LIKE 'PT%'
+	    then 'Part Time'
+			ELSE 'Unknown'
+			END AS shift
+    , ppr.receive_date
+    , ppr.container AS pallet
+    , audits.auditor AS audited_by
+    , audits.date AS audited_date
+    
+
+FROM (
+
+Select received_by as login
+, bin_id as Container
+, receive_date
+
+FROM na_acs_met_ddl.receive_details
+WHERE warehouse_id ='BOS7'
+    and receive_type = 'PALLET'
+    AND receive_date BETWEEN CURRENT_DATE - 7 AND CURRENT_DATE
+
+) as ppr
+
+join (
+
+SELECT user_id
+, supervisor_user_id AS manager
+, shift_pattern
+
+FROM na_acs_met_ddl.fc_employees
+WHERE psoft_location = 1555
+
+) AS emp ON ppr.login = emp.user_id
+
+LEFT JOIN (
+
+Select performed_by as Auditor
+, audit_name as Audit
+, created_at as Date
+, answer as Container
+
+from eu_bias.apollo_audit_questionnaire
+where warehouse_id = 'BOS7'
+    AND region_id ='1'
+    AND audit_type_id = '235'
+    
+) As audits ON audits.container = ppr.container
