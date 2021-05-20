@@ -7,7 +7,7 @@
       {name:"AFT_CAP_CONF_DDL.BINS_DUMP"}
     ]}}*/
 
-with bb as (
+with bb as ( -- bins table for bin ID, bin type, and bin usage
 	select bin_id, bin_type_name, bin_usage_name
 	from aft_cap_conf_ddl.bins_dump
 	where 
@@ -16,7 +16,7 @@ with bb as (
 		and warehouse_id = '{WAREHOUSE_ID}'
 )
 
-, items as (
+, items as ( -- inventory records table for inventory sku info, ownership status, quantity, and received date
     
 	select 
     	dbi.bin_id
@@ -58,10 +58,10 @@ with bb as (
  		dbi.region_id = 1
 		and dbi.SNAPSHOT_DATE = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
 		and dbi.warehouse_id = '{WAREHOUSE_ID}'
-    	and SUBSTRING(dbi.bin_id, 1, 2) = 'P-'
+    	and SUBSTRING(dbi.bin_id, 1, 2) = 'P-' -- only consider prime locations
 )
 
-, aa as (
+, aa as ( -- ASIN attributes table for ASIN list prices and titles
 	select asin, msrp, item_name
     from booker.d_mp_asin_attributes
     where
@@ -69,7 +69,7 @@ with bb as (
     	and marketplace_id = 1
 )
 
-, apm as (
+, apm as ( -- ASIN package measurements table for item lengths, widths, heights, weights, and corresponding item sorts
 	select asin
     , round(length,2) as length
     , round(width,2) as width
