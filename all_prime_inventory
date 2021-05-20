@@ -1,0 +1,149 @@
+/*+ ETLM{depend:{replace:[
+      {name:"BOOKER.D_BIN_ITEMS"},
+      {name:"BOOKER.D_FNSKU_ASIN_MAP"},
+      {name:"BOOKER.D_MP_ASIN_PKG_MEASUREMENTS"},
+      {name:"BOOKER.D_MP_ASIN_ATTRIBUTES"},
+      {name:"BOOKER.O_FCSKUS"},
+      {name:"AFT_CAP_CONF_DDL.BINS_DUMP"}
+    ]}}*/
+
+with bb as (
+	select bin_id, bin_type_name, bin_usage_name
+	from aft_cap_conf_ddl.bins_dump
+	where 
+    	region_id = 1
+		and snapshot_day = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+		and warehouse_id = '{WAREHOUSE_ID}'
+)
+
+, items as (
+    
+	select 
+    	dbi.bin_id
+    	, COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS asin
+    	, COALESCE(ofc.fnsku, dbi.isbn) AS fnsku
+    	, dbi.isbn as fcsku
+    	, lp.lpn
+    	, dbi.quantity
+    	, dbi.owner 
+    	, dbi.received_date
+	from BOOKER.D_BIN_ITEMS as dbi
+    
+    left outer join (
+        SELECT fcsku, lpn
+        FROM booker.o_fcsku_lpn_properties 
+        WHERE region_id = 1
+        ) AS lp
+    	on dbi.ISBN = LP.fcsku
+        
+    left outer join (
+        select fcsku, fnsku
+        from booker.o_fcskus
+        where 
+    		region_id = 1
+    		and is_active = 'Y'
+        ) as ofc
+		on ofc.fcsku = dbi.isbn
+    
+    left outer join (
+        select fulfillment_network_sku, item_authority_id
+		from booker.D_FNSKU_ASIN_MAP
+		where 
+    		region_id = 1
+			and snapshot_day =  to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+        ) as fam
+		on fam.fulfillment_network_sku = COALESCE(ofc.fnsku, dbi.isbn)
+
+	where
+ 		dbi.region_id = 1
+		and dbi.SNAPSHOT_DATE = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
+		and dbi.warehouse_id = '{WAREHOUSE_ID}'
+    	and SUBSTRING(dbi.bin_id, 1, 2) = 'P-'
+)
+
+, aa as (
+	select asin, msrp, item_name
+    from booker.d_mp_asin_attributes
+    where
+    	region_id = 1
+    	and marketplace_id = 1
+)
+
+, apm as (
+	select asin
+    , round(length,2) as length
+    , round(width,2) as width
+    , round(height,2) as height
+    , round(weight,2) as weight
+    , CASE 
+            WHEN LENGTH <= 18
+                AND WIDTH <= 14
+                AND HEIGHT <= 8
+                AND WEIGHT < 20 THEN 'SORTABLE'
+            WHEN LENGTH <= 18
+                AND WIDTH <= 14
+                AND HEIGHT <= 8
+                AND WEIGHT < 50 THEN 'LIBRARY'
+            WHEN LENGTH <= 28
+                AND WIDTH <= 14
+                AND HEIGHT <= 8
+                AND WEIGHT < 25 THEN 'DRAWER'
+            WHEN LENGTH <= 28
+                AND WIDTH <= 24
+                AND HEIGHT <= 20
+                AND WEIGHT < 50 THEN 'LIBRARY-DEEP'
+            WHEN LENGTH <= 48
+                AND WIDTH <= 4
+                AND HEIGHT <= 4
+                AND WEIGHT < 50 THEN 'BAT-BIN'
+            WHEN LENGTH <= 50
+                AND WIDTH <= 16
+                AND HEIGHT <= 16
+                AND WEIGHT < 50 THEN 'HALF-VERTICAL'
+            WHEN LENGTH <= 50
+                AND WIDTH <= 42
+                AND HEIGHT <= 28
+                AND WEIGHT < 50 THEN 'RAINBOW'
+            WHEN LENGTH <= 99
+                AND WIDTH <= 6
+                AND HEIGHT <= 6
+                AND WEIGHT < 50 THEN 'BARREL'
+            WHEN LENGTH <= 99
+                AND WIDTH <= 24
+                AND HEIGHT <= 20
+                AND WEIGHT < 50 THEN 'PASS-THROUGH'
+            WHEN LENGTH <= 99 THEN 'PASS-THROUGH-BULKY'
+            ELSE 'LADDER'
+    END AS item_sort
+    from booker.d_mp_asin_pkg_measurements
+    where
+    	region_id = 1
+    	and marketplace_id = 1
+    	and package_type_id = 1
+)
+
+SELECT
+	bb.bin_id
+    , bb.bin_type_name
+    , bb.bin_usage_name
+    , items.asin
+    , items.fnsku
+    , items.fcsku 
+    , items.lpn
+    , items.quantity
+    , items.owner
+    , items.received_date
+    , aa.msrp as price
+    , apm.length
+    , apm.width
+    , apm.height
+    , apm.weight
+    , apm.item_sort
+    , aa.item_name as title
+FROM bb
+JOIN items -- LEFT JOIN would include all empty bins as well. we are only interested in bins with inventory, so we use a regular (inner) JOIN
+	ON items.bin_id = bb.bin_id
+JOIN aa
+	ON aa.asin = items.asin
+JOIN apm
+	ON apm.asin = items.asin;
