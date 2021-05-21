@@ -11,7 +11,7 @@
 
 /* Goal of this query is to return all tsdmg deletions on a given snapshot day along with info about where and by whom those tsdmg's were picked originally. tsdmg deletions show
 up in two forms in bin edit entries. either they are shorted out by sideline, or manually deleted with Delete Items.  This query does not return deletions from vttsdmg - the
-goal is to catch those items when they are shorted from the tsdmg to the vttsdmg, i.e. while there is still a chance to sideline them back into inventory with correct sku.
+goal is to catch items when they are shorted from the tsdmg to the vttsdmg, i.e. while there is still a chance to sideline them back into inventory with correct sku.
 */
 
 SELECT DISTINCT
