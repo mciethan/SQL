@@ -10,6 +10,10 @@
         ]
     }
 }
+Items can be flipped to PENDING_RESEARCH for many reasons, so trying to whittle down PENDING_RESEARCH work queues can require extensive research.
+By joining the received_date column of d_bin_items to the entry_date column of bin_edit_entries, we can split PENDING_RESEARCH pools into categories with more clearly defined solutions.
+This query identifies PENDING_RESEARCH items that came from automated systems finding items that require an expiration date (specifically, the Cycle Count and Amnesty workflows).
+The result of this query is a more targeted list of pending research - the list of bins can be dropped straight into the Expiry Date Audit tool without further research required.
 */
    
 CREATE TEMP TABLE watson_pending_research_adds -- this table returns any pending research inventory in the site's prime locations that was added in by WatsonCycleCount
@@ -47,7 +51,7 @@ JOIN (
 		SELECT scannable_id
         	, asin
         	, counted_quantity
-    	FROM na_acs_met_ddl.unified_cycle_count_details
+    	FROM na_acs_met_ddl.unified_cycle_count_details 
     	WHERE
         	REGION_ID = '{REGION_ID}'
         	AND WAREHOUSE_ID = '{WAREHOUSE_ID}'
