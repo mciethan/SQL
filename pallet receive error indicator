@@ -1,0 +1,129 @@
+/*+ ETLM{depend:{replace:[
+      {name:"NA_ACS_MET_DDL.FC_EMPLOYEES"},
+      {name:"NA_ACS_MET_DDL.BINS"},
+      {name:"EU_BIAS.APOLLO_AUDIT_QUESTIONNAIRE"},
+      {name:"LP_METRICS_DDL.STOW_METRIC_DATA"},
+      {name:"BOOKER.D_INVENTORY_ADJUSTMENT_ITEMS"},
+      {name:"NA_ACS_MET_DDL.RECEIVE_DETAILS"}
+    ]}}*/
+    
+/*  Receive Error Indicator (REI) is a quality metric that takes the number of times that an AA receives units that later result in shortages or overages (inventory adjustments) in prime locations, and divides it by the total number of units received.  Currently (as of 6/8/21), REI is only tracked for Each Receive, based on SIPS workflow in VNA bins.  This query is an attempt to establish a DPMO metric similar to REI, but for Pallet Receive: something that tracks how often a receiver's pallets are the source of bin item defects.  
+
+For each pallet received in a given period, this query pulls data on when and by whom the pallet was received, whether and by whom the pallet was audited, when and where it was stowed, and if the stow location had any inventory adjustments for that ASIN after the pallet was stowed.  The resulting data can then be aggregated into an "adjustment DPMO" metric grouped by pallet receiver or by pallet auditor (for example, see file://///ant/dept-na/BOS7/Public/ICQA%20DA/Bin%20Meister/Pallet%20Receive%20Error%20Indicator/pallet_adjustment_report.xlsx).
+
+Note that this query only considers adjustments for PALLET-SINGLE bins.  Excluding other bin types is by design.  This is because if an adjustment is made on a bin where multiple pallets of the same ASIN were received by different AAs and stowed into the same bin (which is often the case for bin types like BULK-STOCK), it's impossible to determine from a virtual perspective which specific receiver was responsible for the defect.  In theory, PALLET-SINGLE bins will only ever have one pallet of an ASIN stowed into the bin at a time.   
+
+Another gap in the logic of this query is that if a pallet of ASIN A is stowed in bin Z, adjusted, and then a different pallet of the same ASIN is stowed in the same bin and the bin is adjusted again, all in the same time period, both adjustments will be counted against each pallet.  I judged this to be a rare enough occurence to be worth ignoring for the time being.
+*/
+    
+SELECT ppr.warehouse_id
+    , ppr.login As received_by -- pallet receiver login
+    , emp.manager -- pallet receiver's manager login
+    , CASE 
+	    WHEN emp.shift_pattern LIKE 'N%'
+		    THEN 'Nights'
+	    ELSE 'Days' 
+	  END AS shift -- for the purposes of coaching, this column will only either be Days or Nights.  some AAs have a PT (part time) shift code.  At BOS7, inbound PT AAs work day shift, so I have looped PT (along with any other possible shift codes) into Days.
+    , ppr.receive_date
+    , ppr.receive_qty
+    , ppr.pallet -- pallet tag ID, usually formatted like paX******
+    , audits.auditor AS audited_by -- pallet auditor login. for pallets that weren't audited, this row will be blank.
+    , audits.audited_date
+    , pStows.stowed_by -- pallet stower login
+    , pStows.stow_date
+    , pStows.stow_bin -- pallet stow bin.  this is also the "adjust bin" i.e. the bin where overages/shortages occurred
+    , ia.adjust_qty
+    , ia.adjust_date
+
+FROM ( -- this subquery pulls the pallet tag, FNSku, quantity, receiver, and receive date for all unique pallets received in the time period.  
+
+    Select received_by as login
+        , bin_id as pallet
+        , fcsku AS fnsku -- this table column is called fcsku, but it's actually the FNSku
+        , quantity AS receive_qty
+        , dateadd(hour,3,MAX(receive_date)) AS receive_date -- add three hours to convert from pst to est
+        , warehouse_id
+    FROM na_acs_met_ddl.receive_details
+    WHERE warehouse_id ='{WAREHOUSE_ID}'
+        and receive_type = 'PALLET'
+        AND receive_date > TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD') - 30
+    GROUP BY 1, 2, 3, 4, 6 -- grouping in this way filters results to only include most recent receive details for a given pallet.
+
+) as ppr
+
+join ( -- this subquery pulls manager and shift pattern for each pallet receiver
+
+    SELECT user_id
+        , supervisor_user_id AS manager
+        , shift_pattern
+    FROM na_acs_met_ddl.fc_employees
+    
+) AS emp ON ppr.login = emp.user_id
+
+LEFT JOIN ( -- this subquery pulls auditor and audit date for any pallets that were audited after being received.
+
+    Select allAudits.performed_by as Auditor
+        , uniqueAudits.created_at as audited_date -- created_at column is stored in warehouse local timezone, so no conversion needed here
+        , allAudits.answer as pallet
+    from eu_bias.apollo_audit_questionnaire AS allAudits
+    JOIN( -- sometimes, the same pallet is audited twice.  This subquery filters out anything except the most recent audit.
+        SELECT answer, MAX(created_at) AS created_at
+        FROM eu_bias.apollo_audit_questionnaire
+        WHERE warehouse_id = '{WAREHOUSE_ID}'
+            AND region_id ='{REGION_ID}'
+            AND audit_type_id = '235'
+        GROUP BY answer
+    ) AS uniqueAudits ON uniqueAudits.answer = allAudits.answer 
+    WHERE allAudits.warehouse_id = '{WAREHOUSE_ID}'
+        AND allAudits.region_id ='{REGION_ID}'
+        AND allAudits.audit_type_id = '235' -- Pallet Quantity and Quality Audit: https://apollo-audit.corp.amazon.com/reporting/results_by_audit?audit_type_id=235
+    
+) As audits ON audits.pallet = ppr.pallet
+
+LEFT JOIN ( -- this subquery pulls stower, stow date, and stow bin for any pallets that were stowed after being received.
+
+    SELECT allPStows.source_scannable_id AS pallet
+        , allPStows.bin_id AS stow_bin
+        , allPStows.user_id AS stowed_by
+        , dateadd(hour,-4,uniquePStows.stow_date) AS stow_date -- subtract 4hrs to go from utc to est 
+    FROM lp_metrics_Ddl.stow_metric_data AS allPStows
+    JOIN ( -- sometimes, the same pallet tag is stowed multiple times (stowed, pulled, and then re-stowed). This subquery filters out anything except the most recent stow.
+        SELECT source_scannable_id, MAX(stow_date_utc) AS stow_date 
+        FROM lp_metrics_Ddl.stow_metric_data
+        WHERE region_id = '{REGION_ID}'
+            AND warehouse_id = '{WAREHOUSE_ID}'
+            AND stow_date_utc > TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD') - 30
+        GROUP BY source_scannable_id
+    ) AS uniquePStows ON uniquePStows.source_scannable_id = allPStows.source_scannable_id AND uniquePStows.stow_date = allPStows.stow_date_utc
+
+    WHERE allPStows.region_id = '{REGION_ID}'
+    AND allPStows.warehouse_id = '{WAREHOUSE_ID}'
+    AND allPStows.stow_date_utc > TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD') - 30
+    AND allPStows.success = 'Y' -- this table also includes unsuccessful stows (bin collisions).  This line filters those out.
+ 
+) AS pStows ON pStows.pallet = ppr.pallet
+
+LEFT JOIN ( -- this subquery pulls the "net adjustment" (# of units overaged or shorted) of the received FNSku in each pallet stow bin (ignoring the source of the adjustment(s)) after the pallet was stowed.  
+
+    SELECT bin_id AS adjust_bin
+        , SQRT(SUM(quantity)^2) AS adjust_qty -- this makes all quantities positive so that overages and shortages don't cancel each other out in the DPMO
+        , isbn as fnsku 
+        , dateadd(hour,3,MAX(processed_datetime)) AS adjust_date -- add 3 hours to convert to EST
+    FROM booker.d_inventory_adjustment_items
+    WHERE region_id = '{REGION_ID}'
+        AND warehouse_id = '{WAREHOUSE_ID}'
+        AND processed_day >= TO_DATE('{RUN_DATE_YYYYMMDD}','YYYYMMDD') - 30
+        AND reason_code IN ('M','F')
+    GROUP BY 1, 3   -- grouping in this way makes it so that "net zero" adjustments (i.e. items that are pick shorted, then found by cycle count) don't count against receiver DPMO
+
+) AS ia ON ia.adjust_bin = pStows.stow_bin AND ia.fnsku = ppr.fnsku AND ia.adjust_date > pStows.stow_date
+
+JOIN ( -- this subquery filters out all results for which the stow bin is a bin type other than PALLET-SINGLE
+    
+    SELECT bin_id, bin_type_name
+    FROM na_acs_met_ddl.bins
+    WHERE region_id = '{REGION_ID}'
+    	AND warehouse_id = '{WAREHOUSE_ID}'
+    	AND bin_type_name = 'PALLET-SINGLE'
+    
+) AS bins ON bins.bin_id = pStows.stow_bin
