@@ -1,13 +1,4 @@
-/*+ ETLM{depend:{replace:[
-      {name:"BOOKER.D_BIN_ITEMS"},
-      {name:"BOOKER.D_FNSKU_ASIN_MAP"},
-      {name:"BOOKER.D_MP_ASIN_PKG_MEASUREMENTS"},
-      {name:"BOOKER.D_MP_ASIN_ATTRIBUTES"},
-      {name:"BOOKER.O_FCSKUS"},
-      {name:"AFT_CAP_CONF_DDL.BINS_DUMP"}
-    ]}}*/
-
-with bb as ( -- bins table for bin ID, bin type, and bin usage
+with bb as ( -- bins subquery for bin type and bin usage by bin
 	select bin_id, bin_type_name, bin_usage_name
 	from aft_cap_conf_ddl.bins_dump
 	where 
@@ -16,12 +7,12 @@ with bb as ( -- bins table for bin ID, bin type, and bin usage
 		and warehouse_id = '{WAREHOUSE_ID}'
 )
 
-, items as ( -- inventory records table for inventory sku info, ownership status, quantity, and received date
+, items as ( -- items subquery for inventory sku info, ownership status, quantity, and received date by record
     
 	select 
     	dbi.bin_id
-    	, COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS asin
-    	, COALESCE(ofc.fnsku, dbi.isbn) AS fnsku
+    	, COALESCE(fam.item_authority_id, ofc.fnsku, dbi.isbn) AS asin -- if a given FNSku doesn't have an ASIN listed for it in fam, return the FNSku as the ASIN
+    	, COALESCE(ofc.fnsku, dbi.isbn) AS fnsku -- if a given FCSku doesn't have an FNSku listed for it in ofc, return the FCSku as the FNSku
     	, dbi.isbn as fcsku
     	, lp.lpn
     	, dbi.quantity
@@ -33,7 +24,7 @@ with bb as ( -- bins table for bin ID, bin type, and bin usage
         SELECT fcsku, lpn
         FROM booker.o_fcsku_lpn_properties 
         WHERE region_id = 1
-        ) AS lp
+        ) AS lp -- pulls any corresponding LPN code for a given FCSku
     	on dbi.ISBN = LP.fcsku
         
     left outer join (
@@ -41,8 +32,8 @@ with bb as ( -- bins table for bin ID, bin type, and bin usage
         from booker.o_fcskus
         where 
     		region_id = 1
-    		and is_active = 'Y'
-        ) as ofc
+    		and is_active = 'Y' -- filter out inactive FNSku listings
+        ) as ofc -- pulls any corresponding FNSku for a given FCSku
 		on ofc.fcsku = dbi.isbn
     
     left outer join (
@@ -51,25 +42,25 @@ with bb as ( -- bins table for bin ID, bin type, and bin usage
 		where 
     		region_id = 1
 			and snapshot_day =  to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
-        ) as fam
+        ) as fam -- pulls any corresponding ASIN for a given FNSku
 		on fam.fulfillment_network_sku = COALESCE(ofc.fnsku, dbi.isbn)
 
 	where
  		dbi.region_id = 1
 		and dbi.SNAPSHOT_DATE = to_date ('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD')
 		and dbi.warehouse_id = '{WAREHOUSE_ID}'
-    	and SUBSTRING(dbi.bin_id, 1, 2) = 'P-' -- only consider prime locations
+    	and SUBSTRING(dbi.bin_id, 1, 2) = 'P-' -- prime locations only
 )
 
-, aa as ( -- ASIN attributes table for ASIN list prices and titles
+, aa as ( -- asin attributes subquery for list price and title by ASIN
 	select asin, msrp, item_name
     from booker.d_mp_asin_attributes
     where
     	region_id = 1
-    	and marketplace_id = 1
+    	and marketplace_id = 1 -- some ASINs have different titles/prices for other marketplaces
 )
 
-, apm as ( -- ASIN package measurements table for item lengths, widths, heights, weights, and corresponding item sorts
+, apm as ( -- asin package measurements subquery for length, width, height, weight, and item sort by ASIN
 	select asin
     , round(length,2) as length
     , round(width,2) as width
@@ -114,7 +105,7 @@ with bb as ( -- bins table for bin ID, bin type, and bin usage
                 AND WEIGHT < 50 THEN 'PASS-THROUGH'
             WHEN LENGTH <= 99 THEN 'PASS-THROUGH-BULKY'
             ELSE 'LADDER'
-    END AS item_sort
+    END AS item_sort -- the numerical thresholds in this CASE WHEN clause are item sortation rules specific to BOS7 and other TNS buildings of its generation
     from booker.d_mp_asin_pkg_measurements
     where
     	region_id = 1
