@@ -1,0 +1,53 @@
+/*
+This query returns whether the source defect was found for any amnesty events in a given week where the SRC workflow is complete (where the problem status is Resolved).  It also includes information like the addback location, the source defect location, and the source defect bin type, which can be aggregated to help sites keep track of which mods and which bin types are generating the most amnesty or yielding the lowest find rates.  The query is based on the moriarty problems table, which contains data about amnesty adds, and the moriarty problem events table, which contains data about the SRC counts that are generated in response to each amnesty add.
+*/
+
+SELECT fmp.created_date -- fmp table includes all amnesty adds, along with other adjustments like SIPS and POPS
+    , fmp.last_updated_date
+    , fmp.problem_id
+    , fmp.location_id AS addback_location
+    , fmp.status
+    , CASE WHEN defects.event_id IS NOT NULL THEN 'TRUE' 
+        ELSE 'FALSE'
+        END AS source_defect_found -- if a given amnesty add does not have a defect found event in the defects table, the subquery will return a NULL value for this column
+    , defects.bin_id AS source_defect_location
+    , defects.bin_type_name AS source_bin_type
+FROM inv_quality_ddl.d_fc_moriarty_problems AS fmp 
+
+LEFT JOIN ( -- defects table for amnesty add events where the source defect was found
+    SELECT fmpe.problem_id
+            , fmpe.event_id
+            , fmpe2.event_attribute_value AS bin_id
+    		, bins.bin_type_name
+        FROM inv_quality_ddl.d_fc_moriarty_problem_events AS fmpe
+        
+        JOIN ( -- this subquery pulls the source bin_id for each amnesty SRC where a source defect was found
+            SELECT problem_id
+            , event_id
+            , event_attribute_value
+        FROM inv_quality_ddl.d_fc_moriarty_problem_events
+        WHERE region_id = '{REGION_ID}'
+            AND warehouse_id = '{WAREHOUSE_ID}'
+            AND LEFT(problem_id,21) = '{WAREHOUSE_ID}' + '.AMNESTY_ADD_BACK'
+            AND event_attribute = 'bin_id'
+        ) AS fmpe2 ON fmpe2.problem_id = fmpe.problem_id AND fmpe2.event_id = fmpe.event_id
+    
+    	JOIN ( -- bins table to pull bin type name for any bins where source defect was found
+        	SELECT bin_id, bin_type_name
+            FROM na_acs_met_ddl.bins
+            WHERE region_id = '{REGION_ID}'
+            AND warehouse_id = '{WAREHOUSE_ID}'
+        ) AS bins ON bins.bin_id = fmpe2.event_attribute_value 
+        
+        WHERE fmpe.region_id = '{REGION_ID}'
+            AND fmpe.warehouse_id = '{WAREHOUSE_ID}'
+            AND LEFT(fmpe.problem_id,21) = fmpe.warehouse_id + '.AMNESTY_ADD_BACK' -- filters down to only amnesty SRCs
+            AND fmpe.event_attribute = 'allocated_quantity' 
+            AND fmpe.event_attribute_value = '1' -- this filters down to only amnesty SRCs where the physical quantity was less than the virtual quantity, i.e. where a source defect was found
+) AS defects ON defects.problem_id = fmp.problem_id
+
+WHERE fmp.region_id = 1
+    AND fmp.last_updated_date BETWEEN TO_DATE('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD') - 6 AND TO_DATE('{RUN_DATE_YYYYMMDD}', 'YYYYMMDD') + 1
+    AND fmp.warehouse_id = '{WAREHOUSE_ID}'
+    AND LEFT(fmp.problem_id,21) = '{WAREHOUSE_ID}' + '.AMNESTY_ADD_BACK' -- fmp table includes many different types of problems; this clause filters it down to just amnesty
+    AND fmp.status = 'Resolved' -- fmp table makes separate entries for when an amnesty or other event is Created, Work In Progress, or Resolved; this clause filters down to only Resolved (i.e. SRC workflow complete)
